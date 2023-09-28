@@ -89,7 +89,9 @@ class SippySRSUAS(UA):
         for i, sdp_sect in enumerate(self._p.sess_sdp):
             rsinfo = self._p.rsess.caller.rinfo_hst[i]
             sdp_sect.c_header.addr = rsinfo.rtpproxy_address
-            sdp_sect.m_header.port = rsinfo.rtpproxy_port
+            mh = sdp_sect.m_header
+            mh.port = rsinfo.rtpproxy_port
+            mh.formats = [f for i, f in enumerate(mh.formats) if i == 0]
             ah = sdp_sect.a_headers
             ah = [x for x in ah if x.name in ah_pass]
             sdp_sect.a_headers = ah
