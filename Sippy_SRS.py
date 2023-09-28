@@ -24,7 +24,6 @@
 from sippy.UA import UA
 from sippy.CCEvents import CCEventTry, CCEventConnect, CCEventFail
 from sippy.SipTransactionManager import SipTransactionManager
-from sippy.SipCallId import SipCallId
 from sippy.SdpOrigin import SdpOrigin
 from sippy.Rtp_proxy_session import Rtp_proxy_session, update_params as RPC_up
 from sippy.Rtp_proxy_client import Rtp_proxy_client
@@ -34,7 +33,6 @@ from sippy.Core.EventDispatcher import ED2
 from sippy.Time.Timeout import Timeout
 from sippy.MsgBody import MsgBody
 from sippy.SdpBody import SdpBody
-from sippy.Exceptions.SipParseError import SdpParseError
 from sippy.SipReason import SipReason
 
 class SRSParams:
