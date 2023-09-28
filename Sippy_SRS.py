@@ -46,6 +46,13 @@ class SRSParams:
     sess_sdp = None
     body_tmpl = '\r\n'.join(('v=0', f'o={SdpOrigin()}',
                              's=Sippy_SRS', 't=0 0'))
+    def __init__(self, sippy_c, req):
+        self.sippy_c = sippy_c
+        self.from_tag = req.getHFBody('from').getTag()
+        self.source = req.getSource()
+        self.invite = req
+        self.sess_sdp = []
+        self.rtpp_res = []
 
 class SRSFailure(CCEventFail):
     c2m = {488:'Not Acceptable Here',
@@ -60,14 +67,7 @@ class SippySRSUAS(UA):
     _p: SRSParams
 
     def __init__(self, sippy_c, req, sip_t):
-        self._p = SRSParams()
-        self._p.sippy_c = sippy_c
-        self._p.from_tag = req.getHFBody('from').getTag()
-        #self._p.to_tag = req.getHFBody('to').getTag()
-        self._p.source = req.getSource()
-        self._p.invite = req
-        self._p.sess_sdp = []
-        self._p.rtpp_res = []
+        self._p = SRSParams(sippy_c, req)
         super().__init__(sippy_c, self.outEvent, disc_cbs = (self.sess_term,))
         super().recvRequest(req, sip_t)
 
@@ -80,7 +80,6 @@ class SippySRSUAS(UA):
             return
         nerrs = sum([1 if r is None or r.startswith('E') else 0
                      for r in self._p.rtpp_res])
-        tm = self._p.sippy_c['_sip_tm']
         if nerrs > 0:
             fail = SRSFailure(f'Just Can\'t, {nerrs} times', 502)
             self.recvEvent(fail)
