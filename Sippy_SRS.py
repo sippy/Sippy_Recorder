@@ -23,9 +23,6 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 # SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-import sys
-sys.path.insert(0, '/home/ubuntu/projects/b2bua')
-
 from sippy.UA import UA
 from sippy.CCEvents import CCEventTry, CCEventConnect
 from sippy.SipTransactionManager import SipTransactionManager
@@ -141,7 +138,7 @@ class SippySRS_Control(object):
         SipConf.my_uaname = 'Sippy SRS'
         logger = SipLogger(SipConf.my_uaname.replace(' ', '_'))
         sippy_c = {'_sip_address':SipConf.my_address,
-                   '_sip_port':6666,
+                   '_sip_port':SipConf.my_port,
                    '_sip_logger':logger}
         udsc, udsoc = SipTransactionManager.model_udp_server
         udsoc.nworkers = 1
