@@ -24,7 +24,7 @@
 # SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 from sippy.UA import UA
-from sippy.CCEvents import CCEventTry, CCEventConnect
+from sippy.CCEvents import CCEventTry, CCEventConnect, CCEventFail
 from sippy.SipTransactionManager import SipTransactionManager
 from sippy.SipCallId import SipCallId
 from sippy.SdpOrigin import SdpOrigin
@@ -37,6 +37,7 @@ from sippy.Time.Timeout import Timeout
 from sippy.MsgBody import MsgBody
 from sippy.SdpBody import SdpBody
 from sippy.Exceptions.SipParseError import SdpParseError
+from sippy.SipReason import SipReason
 
 class SRSParams:
     sippy_c = None
@@ -49,6 +50,15 @@ class SRSParams:
     sess_sdp = None
     body_tmpl = '\r\n'.join(('v=0', f'o={SdpOrigin()}',
                              's=Sippy_SRS', 't=0 0'))
+
+class SRSFailure(CCEventFail):
+    c2m = {488:'Not Acceptable Here',
+           502:'Bad Gateway'}
+    def __init__(self, reason, code=488):
+        msg = self.c2m[code]
+        super().__init__((code, msg))
+        self.reason = SipReason(protocol='SIP', cause=code,
+                                reason=reason)
 
 class SippySRSUAS(UA):
     _p: SRSParams
@@ -76,18 +86,16 @@ class SippySRSUAS(UA):
                      for r in self._p.rtpp_res])
         tm = self._p.sippy_c['_sip_tm']
         if nerrs > 0:
-            resp = self._p.invite.genResponse(400, f'Just Can\'t, {nerrs} times')
-            tm.sendResponse(resp)
+            fail = SRSFailure(f'Just Can\'t, {nerrs} times', 502)
+            self.recvEvent(fail)
             return
         ah_pass = ('label', 'rtpmap', 'ptime')
         sdp = SdpBody(self._p.body_tmpl)
         for i, sdp_sect in enumerate(self._p.sess_sdp):
-            ##rsinfo = self.rtpp_res[i]
             rsinfo = self._p.rsess.caller.rinfo_hst[i]
             sdp_sect.c_header.addr = rsinfo.rtpproxy_address
             sdp_sect.m_header.port = rsinfo.rtpproxy_port
             ah = sdp_sect.a_headers
-            #print('ah', ah)
             ah = [x for x in ah if x.name in ah_pass]
             sdp_sect.a_headers = ah
             sdp_sect.addHeader('a', 'recvonly')
@@ -101,13 +109,16 @@ class SippySRSUAS(UA):
             return
         cId, cli, cld, mp_body, auth, caller_name = event.getData()
         if mp_body is None:
-            raise SdpParseError('body-less INVITE is not supportedi')
+            self.recvEvent(SRSFailure('body-less INVITE is not supported (yet), open a PR!'))
+            return
         mp_body.parse()
         if mp_body.getType() != 'multipart/mixed':
-            raise SdpParseError('multipart/mixed body is expected')
+            self.recvEvent(SRSFailure('multipart/mixed body is expected'))
+            return
         sdps = [s for s in mp_body.content.parts if s.getType() == 'application/sdp']
         if len(sdps) == 0:
-            raise SdpParseError('no application/sdp body found')
+            self.recvEvent(SRSFailure('no application/sdp body found'))
+            return
         #print(type(sdp_body.content), type(sdp_body.content.sections))
         rs = Rtp_proxy_session(self._p.sippy_c, cId, self._p.from_tag, self._p.to_tag)
         rs.caller.raddress = self._p.source
@@ -149,7 +160,7 @@ class SippySRS_Control(object):
                 ED2.breakLoop()
         t = Timeout(waitonline, 0.1, 10, rpc)
         self.run(2.0)
-        if not rpc.online and False:
+        if not rpc.online:
             raise Exception("Timeout out waiting for the RTPProxy client to come online")
         t.cancel()
         sippy_c['_rtp_proxy_clients'] = (rpc,)
