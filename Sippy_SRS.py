@@ -21,12 +21,14 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 # SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+from argparse import ArgumentParser
+
 from sippy.UA import UA
 from sippy.CCEvents import CCEventTry, CCEventConnect, CCEventFail
 from sippy.SipTransactionManager import SipTransactionManager
 from sippy.SdpOrigin import SdpOrigin
-from sippy.Rtp_proxy_session import Rtp_proxy_session, update_params as RPC_up
-from sippy.Rtp_proxy_client import Rtp_proxy_client
+from sippy.Rtp_proxy.session import Rtp_proxy_session, update_params as RPC_up
+from sippy.Rtp_proxy.client import Rtp_proxy_client
 from sippy.SipLogger import SipLogger
 from sippy.SipConf import SipConf
 from sippy.Core.EventDispatcher import ED2
@@ -140,9 +142,14 @@ class SippySRSUAS(UA):
         self._p.rsess = rs
 
 class SippySRS_Control(object):
+    parser = ArgumentParser(description='Sippy SRS Control Interface')
+    parser.add_argument('--rtp_proxy_client', help='RTP proxy client spec string', default='/tmp/rtpp.sock')
     sippy_c = None
 
     def __init__(self):
+        args = self.parser.parse_args()
+        assert args.rtp_proxy_client is not None
+        print('RTP proxy client:', args.rtp_proxy_client)
         SipConf.my_uaname = 'Sippy SRS'
         logger = SipLogger(SipConf.my_uaname.replace(' ', '_'))
         sippy_c = {'_sip_address':SipConf.my_address,
@@ -150,8 +157,7 @@ class SippySRS_Control(object):
                    '_sip_logger':logger}
         udsc, udsoc = SipTransactionManager.model_udp_server
         udsoc.nworkers = 1
-        sippy_c['_sip_tm'] = SipTransactionManager(sippy_c, self.recvRequest)
-        rpc = Rtp_proxy_client(sippy_c, spath = '/tmp/rtpp.sock')
+        rpc = Rtp_proxy_client(sippy_c, spath = args.rtp_proxy_client)
         def waitonline(_rpc):
             if _rpc.online:
                 ED2.breakLoop()
@@ -161,6 +167,7 @@ class SippySRS_Control(object):
             raise Exception("Timeout out waiting for the RTPProxy client to come online")
         t.cancel()
         sippy_c['_rtp_proxy_clients'] = (rpc,)
+        sippy_c['_sip_tm'] = SipTransactionManager(sippy_c, self.recvRequest)
         self.sippy_c = sippy_c
 
     def run(self, timeout=None):
