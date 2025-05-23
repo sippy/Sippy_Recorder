@@ -23,7 +23,9 @@
 
 from argparse import ArgumentParser
 from weakref import WeakSet
-from functools import partial
+from functools import partial, wraps
+from secrets import token_hex
+from urllib.parse import quote
 
 from sippy.UA import UA
 from sippy.CCEvents import CCEventTry, CCEventConnect, CCEventFail
@@ -39,6 +41,7 @@ from sippy.MsgBody import MsgBody
 from sippy.SdpBody import SdpBody
 from sippy.SipReason import SipReason
 from sippy.UI.Controller import UIController
+from sippy.CLIManager import CLIManager
 
 class SRSParams:
     sippy_c = None
@@ -49,6 +52,7 @@ class SRSParams:
     rtpp_r_res = None
     rtpp_u_res = None
     sess_sdp = None
+    rname = None
     body_tmpl = '\r\n'.join(('v=0', f'o={SdpOrigin()}',
                              's=Sippy_SRS', 't=0 0'))
     def __init__(self, sippy_c, req):
@@ -58,6 +62,10 @@ class SRSParams:
         self.sess_sdp = []
         self.rtpp_r_res = []
         self.rtpp_u_res = {}
+        self.rname = str(token_hex(16))
+
+    def get_rname(self, index):
+        return f'{self.rname}_{index}'
 
 class SRSFailure(CCEventFail):
     c2m = {488:'Not Acceptable Here',
@@ -68,14 +76,28 @@ class SRSFailure(CCEventFail):
         self.reason = SipReason(protocol='SIP', cause=code,
                                 reason=reason)
 
+def check_state_required(method):
+    @wraps(method)
+    def wrapper(self, *args, **kwargs):
+        if not self.checkState():
+            return
+        return method(self, *args, **kwargs)
+    return wrapper
+
 class SippySRSUAS(UA):
+    id = 0
     _p: SRSParams
     cId: 'SipCallId'
 
     def __init__(self, sippy_c, req, sip_t):
+        self.id = SippySRSUAS.id
+        SippySRSUAS.id += 1
         self._p = SRSParams(sippy_c, req)
         super().__init__(sippy_c, self.outEvent, disc_cbs = (self.sess_term,))
         super().recvRequest(req, sip_t)
+
+    def checkState(self):
+        return isinstance(self.state, (self.UasStateTrying, self.UasStateRinging))
 
     def sess_term(self, ua, rtime, origin, result = 0):
         print('disconnected')
@@ -84,6 +106,7 @@ class SippySRSUAS(UA):
         del self._p.sippy_c
         self._p = None
 
+    @check_state_required
     def rtp_legA_created(self, index, result, _):
         if result is None:
             return self.rtp_rec_created(None)
@@ -93,12 +116,16 @@ class SippySRSUAS(UA):
         up.result_callback = partial(self.rtp_legB_created, index)
         self._p.rsess.callee.update(up)
 
+    @check_state_required
     def rtp_legB_created(self, index, result, _):
         if result is None:
             return self.rtp_rec_created(None)
         self._p.rtpp_u_res[index] = (result.rtpproxy_address, result.rtpproxy_port)
-        self._p.rsess.start_recording(result_callback=self.rtp_rec_created, index=index)
+        rname = self._p.get_rname(index)
+        self._p.rsess.start_recording(rname, result_callback=self.rtp_rec_created,
+                                      index=index, only_a=True, rflags='s')
 
+    @check_state_required
     def rtp_rec_created(self, result):
         self._p.rtpp_r_res.append(result)
         if len(self._p.rtpp_r_res) < len(self._p.sess_sdp):
@@ -106,7 +133,7 @@ class SippySRSUAS(UA):
         nerrs = sum([1 if r is None or r.startswith('E') else 0
                      for r in self._p.rtpp_r_res])
         if nerrs > 0:
-            fail = SRSFailure(f'Just Can\'t, {nerrs} times', 502)
+            fail = SRSFailure(f'Something broke, {nerrs} times', 502)
             self.recvEvent(fail)
             return
         ah_pass = ('label', 'rtpmap', 'ptime')
@@ -124,6 +151,7 @@ class SippySRSUAS(UA):
         event = CCEventConnect((200, 'OpenSIPIt Is Great Again! :)', sdp))
         self.recvEvent(event)
 
+    @check_state_required
     def outEvent(self, event, ua):
         if not isinstance(event, CCEventTry):
             return
@@ -142,6 +170,7 @@ class SippySRSUAS(UA):
             return
         #print(type(sdp_body.content), type(sdp_body.content.sections))
         rs = Rtp_proxy_session(self._p.sippy_c, cId, self._p.from_tag, self._p.to_tag)
+        rs.notify_tag = quote(f'r {self.id}')
         self._p.rsess = rs
         rs.caller.raddress = self._p.source
         for sdp in sdps:
@@ -184,7 +213,8 @@ class SippySRS_Control(object):
             UIController(sippy_c, "Sippy SIP Recording Server")
         udsc, udsoc = SipTransactionManager.model_udp_server
         udsoc.nworkers = 1
-        rpc = Rtp_proxy_client(sippy_c, spath = args.rtp_proxy_client)
+        kwa = {'nsetup_f': self.set_rtp_io_socket} if args.rtp_proxy_client.startswith('rtp.io:') else {}
+        rpc = Rtp_proxy_client(sippy_c, spath = args.rtp_proxy_client, **kwa)
         def waitonline(_rpc):
             if _rpc.online:
                 ED2.breakLoop()
@@ -229,6 +259,28 @@ class SippySRS_Control(object):
             ua.disconnect()
         self.sippy_c['_sip_tm'].shutdown()
         Timeout(ED2.breakLoop, 0.2, 1)
+
+    def set_rtp_io_socket(self, rtpp_nsock, rtpp_nsock_spec):
+        CLIManager(rtpp_nsock, self.recvCommand)
+
+    def recvCommand(self, clim, cmd):
+        args = cmd.split()
+        cmd = args.pop(0).lower()
+        if cmd == 'r':
+            if len(args) != 1:
+                clim.send('ERROR: syntax error: r [<id>]\n')
+                return False
+            idx = int(args[0])
+            dlist = tuple(x for x in self.active_uas if x.id == idx)
+            if len(dlist) == 0:
+                clim.send('ERROR: no call with id of %d has been found\n' % idx)
+                return False
+            for cc in dlist:
+                cc.disconnect()
+            clim.send('OK\n')
+            return False
+        clim.send('ERROR: unknown command\n')
+        return False
 
 if __name__ == '__main__':
     exit(SippySRS_Control().run())
